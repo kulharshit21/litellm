@@ -78,6 +78,7 @@ pub(crate) async fn connect(
                 events: Some(events.clone()),
                 http: resources.http.clone(),
                 environment: resources.lookup.clone(),
+                credential_provider: None,
             },
         )?)
     };
