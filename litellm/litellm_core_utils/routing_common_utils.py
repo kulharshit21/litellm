@@ -431,6 +431,16 @@ def _deployment_supports_web_search(deployment: dict) -> bool:
     return True
 
 
+def is_web_search_request(request_kwargs: Mapping[str, object]) -> bool:
+    tools: Final[object] = request_kwargs.get("tools")
+    return isinstance(tools, (list, tuple)) and any(
+        isinstance(tool, dict)
+        and isinstance(tool_type := tool.get("type"), str)
+        and tool_type in _WEB_SEARCH_TOOL_TYPES
+        for tool in tools
+    )
+
+
 def filter_web_search_deployments(
     healthy_deployments: list[dict] | dict,
     request_kwargs: dict | None = None,
@@ -445,14 +455,7 @@ def filter_web_search_deployments(
     if isinstance(healthy_deployments, dict):
         return healthy_deployments
 
-    tools: Final[object] = request_kwargs.get("tools")
-    is_web_search_request: Final = isinstance(tools, (list, tuple)) and any(
-        isinstance(tool, dict)
-        and isinstance(tool_type := tool.get("type"), str)
-        and tool_type in _WEB_SEARCH_TOOL_TYPES
-        for tool in tools
-    )
-    if not is_web_search_request:
+    if not is_web_search_request(request_kwargs):
         return healthy_deployments
 
     # Filter out deployments that don't support web search

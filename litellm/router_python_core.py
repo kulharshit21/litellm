@@ -357,6 +357,11 @@ from litellm.router_utils.fallback_event_handlers import (
     routed_deployment_id,
     run_async_fallback,
 )
+from litellm.router_utils.global_callback_holders import (
+    live_check_owners,
+    routers_holding_global_callbacks,
+    routers_holding_global_callbacks_lock,
+)
 from litellm.router_utils.handle_error import (
     async_raise_no_deployment_exception,
     send_llm_exception_alert,
@@ -1224,8 +1229,9 @@ class RoutingArgs(enum.Enum):
 # as the per-request one built from a caller-supplied user_config, drops out on its
 # own rather than leaving entries behind that nothing can withdraw.
 _live_routers: Final["weakref.WeakSet[PythonCore]"] = weakref.WeakSet()
-_routers_holding_global_callbacks: Final["weakref.WeakSet[PythonCore]"] = weakref.WeakSet()
-_routers_holding_global_callbacks_lock: Final = threading.Lock()
+# Shared with the other router cores of the process (litellm/router_utils/global_callback_holders.py).
+_routers_holding_global_callbacks: Final["weakref.WeakSet[PythonCore]"] = routers_holding_global_callbacks  # pyright: ignore[reportAssignmentType]  # every member serves the holder members
+_routers_holding_global_callbacks_lock: Final = routers_holding_global_callbacks_lock
 
 
 def _replay_live_router_model_cost() -> None:
@@ -1864,6 +1870,7 @@ class PythonCore(DeprecatedRouterMembers):
         # cost-map entries from the list it is serving at that moment, whether
         # those deployments came from model_list or were added later from the DB.
         _live_routers.add(self)
+        live_check_owners.add(self)
 
         if allowed_fails is not None:
             self._core_allowed_fails = allowed_fails
@@ -2089,6 +2096,7 @@ class PythonCore(DeprecatedRouterMembers):
         # Stop contributing to cost-map rebuilds straight away rather than waiting
         # for this router to be collected.
         _live_routers.discard(self)
+        live_check_owners.discard(self)
         self.retire_routing_state()
         self._release_global_callbacks()
 
@@ -3392,7 +3400,7 @@ class PythonCore(DeprecatedRouterMembers):
         self.optional_callbacks = [cb for cb in self.optional_callbacks if type(cb) is not callback_cls]
         if any(
             router is not self and any(type(cb) is callback_cls for cb in (router.optional_callbacks or []))
-            for router in tuple(_live_routers)
+            for router in (*_live_routers, *(owner for owner in live_check_owners if not isinstance(owner, PythonCore)))
         ):
             return
         for cb in tuple(self._host.callback_list("callbacks")):
@@ -14664,9 +14672,7 @@ class PythonCore(DeprecatedRouterMembers):
         """
         if team_id is not None and self._team_deployments_named(team_id, model_group):
             return self._core_get_all_deployments(model_name=model_group, team_id=team_id)
-        own: Final = cast(  # cast-ok: the private alias returns what get_all_deployments returns
-            list[DeploymentTypedDict], self._get_all_deployments(model_name=model_group)
-        )
+        own: Final = self._get_all_deployments(model_name=model_group)
         named: Final = [*own, *self._core_get_model_list_from_routing_groups(model_name=model_group)]
         return named or self._get_wildcard_deployments(model_name=model_group)
 
